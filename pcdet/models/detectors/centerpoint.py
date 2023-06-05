@@ -10,6 +10,7 @@ class CenterPoint(Detector3DTemplate):
         for cur_module in self.module_list:
             batch_dict = cur_module(batch_dict)
 
+        # TODO 当模型导出时，注释这部分代码
         if self.training:
             loss, tb_dict, disp_dict = self.get_training_loss()
 
@@ -34,6 +35,7 @@ class CenterPoint(Detector3DTemplate):
         return loss, tb_dict, disp_dict
 
     def post_processing(self, batch_dict):
+        # TODO 当模型导出时，不使用pytorch来进行后处理，即注释这部分代码
         post_process_cfg = self.model_cfg.POST_PROCESSING
         batch_size = batch_dict['batch_size']
         final_pred_dict = batch_dict['final_box_dicts']

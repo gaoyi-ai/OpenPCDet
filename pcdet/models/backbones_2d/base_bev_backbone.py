@@ -57,7 +57,7 @@ class BaseBEVBackbone(nn.Module):
                         nn.ReLU()
                     ))
                 else:
-                    stride = np.round(1 / stride).astype(np.int)
+                    stride = np.round(1 / stride).astype(int)
                     self.deblocks.append(nn.Sequential(
                         nn.Conv2d(
                             num_filters[idx], num_upsample_filters[idx],
@@ -191,13 +191,13 @@ class BaseBEVBackboneV1(nn.Module):
         x_conv4 = spatial_features['x_conv4']
         x_conv5 = spatial_features['x_conv5']
 
-        ups = [self.deblocks[0](x_conv4)]
+        ups = [self.deblocks[0](x_conv4)] # [(4,128,180,180)]
 
-        x = self.blocks[1](x_conv5)
-        ups.append(self.deblocks[1](x))
+        x = self.blocks[1](x_conv5) # (4,256,90,90)
+        ups.append(self.deblocks[1](x)) # [(4,128,180,180), (4,128,180,180)]
 
-        x = torch.cat(ups, dim=1)
-        x = self.blocks[0](x)
+        x = torch.cat(ups, dim=1) # (4,256,180,180)
+        x = self.blocks[0](x) # (4,256,180,180)
 
         data_dict['spatial_features_2d'] = x
 

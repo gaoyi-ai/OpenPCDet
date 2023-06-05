@@ -36,14 +36,19 @@ class PFNLayer(nn.Module):
         else:
             x = self.linear(inputs)
         torch.backends.cudnn.enabled = False
+        # BatchNorm1d层:(102181, 64, 20) --> (102181, 20, 64)
+        # 这里之所以变换维度，是因为BatchNorm1d在通道维度上进行,对于图像来说默认模式为[N,C,H*W],通道在第二个维度上
         x = self.norm(x.permute(0, 2, 1)).permute(0, 2, 1) if self.use_norm else x
         torch.backends.cudnn.enabled = True
         x = F.relu(x)
+        # 按照维度取每个voxel中的最大值 --> (102181, 1, 64)
+        # 这里的0是表示取数值，max的1表示索引
         x_max = torch.max(x, dim=1, keepdim=True)[0]
 
         if self.last_vfe:
             return x_max
         else:
+            # torch的repeat在第几维度复制几遍
             x_repeat = x_max.repeat(1, inputs.shape[1], 1)
             x_concatenated = torch.cat([x, x_repeat], dim=2)
             return x_concatenated
@@ -84,6 +89,13 @@ class PillarVFE(VFETemplate):
         return self.num_filters[-1]
 
     def get_paddings_indicator(self, actual_num, max_num, axis=0):
+        """
+        Args:
+            actual_num:每个voxel实际点的数量（76617，）
+            max_num:voxel最大点的数量（20，）
+        Returns:
+            paddings_indicator:表明需要padding的位置(76617, 20)
+        """
         actual_num = torch.unsqueeze(actual_num, axis + 1)
         max_num_shape = [1] * len(actual_num.shape)
         max_num_shape[axis + 1] = -1
@@ -92,10 +104,9 @@ class PillarVFE(VFETemplate):
         return paddings_indicator
 
     def forward(self, batch_dict, **kwargs):
-  
         voxel_features, voxel_num_points, coords = batch_dict['voxels'], batch_dict['voxel_num_points'], batch_dict['voxel_coords']
-        points_mean = voxel_features[:, :, :3].sum(dim=1, keepdim=True) / voxel_num_points.type_as(voxel_features).view(-1, 1, 1)
-        f_cluster = voxel_features[:, :, :3] - points_mean
+        points_mean = voxel_features[:, :, :3].sum(dim=1, keepdim=True) / voxel_num_points.type_as(voxel_features).view(-1, 1, 1) # 每个voxel的特征 (76617,1,3)
+        f_cluster = voxel_features[:, :, :3] - points_mean # 每个点的cluster特征 (76617,20,3)
 
         f_center = torch.zeros_like(voxel_features[:, :, :3])
         f_center[:, :, 0] = voxel_features[:, :, 0] - (coords[:, 3].to(voxel_features.dtype).unsqueeze(1) * self.voxel_x + self.x_offset)
@@ -115,9 +126,9 @@ class PillarVFE(VFETemplate):
         voxel_count = features.shape[1]
         mask = self.get_paddings_indicator(voxel_num_points, voxel_count, axis=0)
         mask = torch.unsqueeze(mask, -1).type_as(voxel_features)
-        features *= mask
+        features *= mask # (76617，32，20) --> 每个voxel未必填满，将没有填满的点置0
         for pfn in self.pfn_layers:
             features = pfn(features)
-        features = features.squeeze()
+        features = features.squeeze() # (76617, 64)
         batch_dict['pillar_features'] = features
         return batch_dict

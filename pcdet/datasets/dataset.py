@@ -227,6 +227,8 @@ class DatasetTemplate(torch_data.Dataset):
         ret = {}
         batch_size_ratio = 1
 
+        # 将合并后的key内的value进行拼接，先获取最大值，构造空矩阵，不足的部分补0
+        # 因为pytorch要求输入数据维度一致
         for key, val in data_dict.items():
             try:
                 if key in ['voxels', 'voxel_num_points']:

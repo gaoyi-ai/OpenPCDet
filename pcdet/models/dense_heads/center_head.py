@@ -322,22 +322,37 @@ class CenterHead(nn.Module):
         return rois, roi_scores, roi_labels
 
     def forward(self, data_dict):
-        spatial_features_2d = data_dict['spatial_features_2d']
-        x = self.shared_conv(spatial_features_2d)
+        spatial_features_2d = data_dict['spatial_features_2d'] # BEV视图上的feature （batch_size， Channels， H， W）
+        x = self.shared_conv(spatial_features_2d) # 一个普通巻积，将channel 变为 64 ，并使用了bias
 
         pred_dicts = []
+        # 每个head对应一个类，一共6个类，这里对每个类都预测出了 center， center_z,dim, rot, vel, hm.每个head其实就是多个巻积构成的fc的预测结果
         for head in self.heads_list:
             pred_dicts.append(head(x))
 
+        '''
+               与二维的CenterNet有点不同，二维是直接预测 （B，C，H，W）C代表的是类别数量。这里直接针对每个类给出 pred_dicts,其实也差不多。
+                   pred_dicts[0]['center'].shape
+                   torch.Size([2, 2, 128, 128])
+                   pred_dicts[0]['center_z'].shape
+                   torch.Size([2, 1, 128, 128])
+                   pred_dicts[0]['dim'].shape
+                   torch.Size([2, 3, 128, 128])
+                   pred_dicts[0]['rot'].shape
+                   torch.Size([2, 2, 128, 128])
+                   pred_dicts[0]['hm'].shape
+                   torch.Size([2, 1, 128, 128])
+        '''
         if self.training:
             target_dict = self.assign_targets(
                 data_dict['gt_boxes'], feature_map_size=spatial_features_2d.size()[2:],
                 feature_map_stride=data_dict.get('spatial_features_2d_strides', None)
-            )
+            ) # 传入的参数有：data_dict['gt_boxes']---torch.Size([2, 85, 10])  feature_map_size BEV下的特征图尺寸（H ，W）
             self.forward_ret_dict['target_dicts'] = target_dict
 
         self.forward_ret_dict['pred_dicts'] = pred_dicts
 
+        # TODO 当模型导出时，不使用pytorch来生成对应的bbs，即注释这部分代码
         if not self.training or self.predict_boxes_when_training:
             pred_dicts = self.generate_predicted_boxes(
                 data_dict['batch_size'], pred_dicts

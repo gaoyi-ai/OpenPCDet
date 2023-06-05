@@ -33,16 +33,20 @@ class PFNLayerV2(nn.Module):
         self.relu = nn.ReLU()
 
     def forward(self, inputs, unq_inv):
-
+        """
+        Args:
+            inputs: 每个点的基本特征（1063950，C_in）
+            unq_inv: 每个点对应的唯一voxel索引（1063950，） 值的范围为 （0，49139）
+        """
         x = self.linear(inputs)
         x = self.norm(x) if self.use_norm else x
-        x = self.relu(x)
-        x_max = torch_scatter.scatter_max(x, unq_inv, dim=0)[0]
+        x = self.relu(x) # (1063950,32)
+        x_max = torch_scatter.scatter_max(x, unq_inv, dim=0)[0] # (49139,32)
 
         if self.last_vfe:
             return x_max
         else:
-            x_concatenated = torch.cat([x, x_max[unq_inv, :]], dim=1)
+            x_concatenated = torch.cat([x, x_max[unq_inv, :]], dim=1) # (1063950,64) # x_max[unq_inv, :] (1063950,32)
             return x_concatenated
 
 
@@ -88,10 +92,10 @@ class DynamicPillarVFE(VFETemplate):
         return self.num_filters[-1]
 
     def forward(self, batch_dict, **kwargs):
-        points = batch_dict['points'] # (batch_idx, x, y, z, i, e)
+        points = batch_dict['points'] # (batch_idx, x, y, z, i, e) # (1063950,6)
 
-        points_coords = torch.floor((points[:, [1,2]] - self.point_cloud_range[[0,1]]) / self.voxel_size[[0,1]]).int()
-        mask = ((points_coords >= 0) & (points_coords < self.grid_size[[0,1]])).all(dim=1)
+        points_coords = torch.floor((points[:, [1,2]] - self.point_cloud_range[[0,1]]) / self.voxel_size[[0,1]]).int() # (1063950,2)
+        mask = ((points_coords >= 0) & (points_coords < self.grid_size[[0,1]])).all(dim=1) # (1063950,)
         points = points[mask]
         points_coords = points_coords[mask]
         points_xyz = points[:, [1, 2, 3]].contiguous()
@@ -121,7 +125,7 @@ class DynamicPillarVFE(VFETemplate):
         features = torch.cat(features, dim=-1)
         
         for pfn in self.pfn_layers:
-            features = pfn(features, unq_inv)
+            features = pfn(features, unq_inv) # (49139, 64)
         # features = self.linear1(features)
         # features_max = torch_scatter.scatter_max(features, unq_inv, dim=0)[0]
         # features = torch.cat([features, features_max[unq_inv, :]], dim=1)
@@ -130,15 +134,15 @@ class DynamicPillarVFE(VFETemplate):
         
         # generate voxel coordinates
         unq_coords = unq_coords.int()
-        voxel_coords = torch.stack((unq_coords // self.scale_xy,
-                                   (unq_coords % self.scale_xy) // self.scale_y,
-                                   unq_coords % self.scale_y,
-                                   torch.zeros(unq_coords.shape[0]).to(unq_coords.device).int()
+        voxel_coords = torch.stack((unq_coords // self.scale_xy, # batch_idx
+                                   (unq_coords % self.scale_xy) // self.scale_y, # x
+                                   unq_coords % self.scale_y, # y
+                                   torch.zeros(unq_coords.shape[0]).to(unq_coords.device).int() # z
                                    ), dim=1)
         voxel_coords = voxel_coords[:, [0, 3, 2, 1]]
 
-        batch_dict['voxel_features'] = batch_dict['pillar_features'] = features
-        batch_dict['voxel_coords'] = voxel_coords
+        batch_dict['voxel_features'] = batch_dict['pillar_features'] = features # (49139,64)
+        batch_dict['voxel_coords'] = voxel_coords # (49139,4)
         return batch_dict
 
 
@@ -229,9 +233,9 @@ class DynamicPillarVFESimple2D(VFETemplate):
 
         # generate voxel coordinates
         unq_coords = unq_coords.int()
-        pillar_coords = torch.stack((unq_coords // self.scale_xy,
-                                     (unq_coords % self.scale_xy) // self.scale_y,
-                                     unq_coords % self.scale_y,
+        pillar_coords = torch.stack((unq_coords // self.scale_xy, # batch_idx
+                                     (unq_coords % self.scale_xy) // self.scale_y, # x
+                                     unq_coords % self.scale_y, # y
                                      ), dim=1)
         pillar_coords = pillar_coords[:, [0, 2, 1]]
 
