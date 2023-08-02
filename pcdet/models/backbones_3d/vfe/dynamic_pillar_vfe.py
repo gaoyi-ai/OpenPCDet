@@ -18,7 +18,7 @@ class PFNLayerV2(nn.Module):
                  use_norm=True,
                  last_layer=False):
         super().__init__()
-        
+
         self.last_vfe = last_layer
         self.use_norm = use_norm
         if not self.last_vfe:
@@ -29,7 +29,7 @@ class PFNLayerV2(nn.Module):
             self.norm = nn.BatchNorm1d(out_channels, eps=1e-3, momentum=0.01)
         else:
             self.linear = nn.Linear(in_channels, out_channels, bias=True)
-        
+
         self.relu = nn.ReLU()
 
     def forward(self, inputs, unq_inv):
@@ -40,13 +40,13 @@ class PFNLayerV2(nn.Module):
         """
         x = self.linear(inputs)
         x = self.norm(x) if self.use_norm else x
-        x = self.relu(x) # (1063950,32)
-        x_max = torch_scatter.scatter_max(x, unq_inv, dim=0)[0] # (49139,32)
+        x = self.relu(x)  # (1063950,32)
+        x_max = torch_scatter.scatter_max(x, unq_inv, dim=0)[0]  # (49139,32)
 
         if self.last_vfe:
             return x_max
         else:
-            x_concatenated = torch.cat([x, x_max[unq_inv, :]], dim=1) # (1063950,64) # x_max[unq_inv, :] (1063950,32)
+            x_concatenated = torch.cat([x, x_max[unq_inv, :]], dim=1)  # (1063950,64) # x_max[unq_inv, :] (1063950,32)
             return x_concatenated
 
 
@@ -83,7 +83,7 @@ class DynamicPillarVFE(VFETemplate):
 
         self.scale_xy = grid_size[0] * grid_size[1]
         self.scale_y = grid_size[1]
-        
+
         self.grid_size = torch.tensor(grid_size).cuda()
         self.voxel_size = torch.tensor(voxel_size).cuda()
         self.point_cloud_range = torch.tensor(point_cloud_range).cuda()
@@ -92,21 +92,24 @@ class DynamicPillarVFE(VFETemplate):
         return self.num_filters[-1]
 
     def forward(self, batch_dict, **kwargs):
-        points = batch_dict['points'] # (batch_idx, x, y, z, i, e) # (1063950,6)
+        points = batch_dict['points']  # (batch_idx, x, y, z, i, e) # (1063950,6)
 
-        points_coords = torch.floor((points[:, [1,2]] - self.point_cloud_range[[0,1]]) / self.voxel_size[[0,1]]).int() # (1063950,2)
-        mask = ((points_coords >= 0) & (points_coords < self.grid_size[[0,1]])).all(dim=1) # (1063950,)
+        points_coords = torch.floor(
+            (points[:, [1, 2]] - self.point_cloud_range[[0, 1]]) / self.voxel_size[[0, 1]]).int()  # (1063950,2)
+        mask = ((points_coords >= 0) & (points_coords < self.grid_size[[0, 1]])).all(dim=1)  # (1063950,)
         points = points[mask]
         points_coords = points_coords[mask]
-        points_xyz = points[:, [1, 2, 3]].contiguous()
+        points_xyz_v1 = points[:, [1, 2, 3]].contiguous()
+        points_xyz = points[..., 1:4].contiguous()
 
         merge_coords = points[:, 0].int() * self.scale_xy + \
                        points_coords[:, 0] * self.scale_y + \
                        points_coords[:, 1]
-        
+
         unq_coords, unq_inv, unq_cnt = torch.unique(merge_coords, return_inverse=True, return_counts=True, dim=0)
 
         points_mean = torch_scatter.scatter_mean(points_xyz, unq_inv, dim=0)
+        # points_mean_v2 = torch.scatter_reduce(points_xyz, dim=0, index=unq_inv, src=points_xyz, reduce="mean")
         f_cluster = points_xyz - points_mean[unq_inv, :]
 
         f_center = torch.zeros_like(points_xyz)
@@ -114,35 +117,40 @@ class DynamicPillarVFE(VFETemplate):
         f_center[:, 1] = points_xyz[:, 1] - (points_coords[:, 1].to(points_xyz.dtype) * self.voxel_y + self.y_offset)
         f_center[:, 2] = points_xyz[:, 2] - self.z_offset
 
+        z_offsets = torch.full((points_xyz.shape[0], 1), self.z_offset, device=points_xyz.device)
+        xy_offsets = points_coords * torch.tensor([self.voxel_x, self.voxel_y],device=points_xyz.device) \
+                     + torch.tensor([self.x_offset, self.y_offset], device=points_xyz.device)
+        f_center_v2 = points_xyz - torch.cat([xy_offsets, z_offsets], dim=1)
+
         if self.use_absolute_xyz:
             features = [points[:, 1:], f_cluster, f_center]
         else:
             features = [points[:, 4:], f_cluster, f_center]
-        
+
         if self.with_distance:
             points_dist = torch.norm(points[:, 1:4], 2, dim=1, keepdim=True)
             features.append(points_dist)
         features = torch.cat(features, dim=-1)
-        
+
         for pfn in self.pfn_layers:
-            features = pfn(features, unq_inv) # (49139, 64)
+            features = pfn(features, unq_inv)  # (49139, 64)
         # features = self.linear1(features)
         # features_max = torch_scatter.scatter_max(features, unq_inv, dim=0)[0]
         # features = torch.cat([features, features_max[unq_inv, :]], dim=1)
         # features = self.linear2(features)
         # features = torch_scatter.scatter_max(features, unq_inv, dim=0)[0]
-        
+
         # generate voxel coordinates
         unq_coords = unq_coords.int()
-        voxel_coords = torch.stack((unq_coords // self.scale_xy, # batch_idx
-                                   (unq_coords % self.scale_xy) // self.scale_y, # x
-                                   unq_coords % self.scale_y, # y
-                                   torch.zeros(unq_coords.shape[0]).to(unq_coords.device).int() # z
-                                   ), dim=1)
+        voxel_coords = torch.stack((unq_coords // self.scale_xy,  # batch_idx
+                                    (unq_coords % self.scale_xy) // self.scale_y,  # x
+                                    unq_coords % self.scale_y,  # y
+                                    torch.zeros(unq_coords.shape[0]).to(unq_coords.device).int()  # z
+                                    ), dim=1)
         voxel_coords = voxel_coords[:, [0, 3, 2, 1]]
 
-        batch_dict['voxel_features'] = batch_dict['pillar_features'] = features # (49139,64)
-        batch_dict['voxel_coords'] = voxel_coords # (49139,4)
+        batch_dict['voxel_features'] = batch_dict['pillar_features'] = features  # (49139,64)
+        batch_dict['voxel_coords'] = voxel_coords  # (49139,4)
         return batch_dict
 
 
@@ -233,9 +241,9 @@ class DynamicPillarVFESimple2D(VFETemplate):
 
         # generate voxel coordinates
         unq_coords = unq_coords.int()
-        pillar_coords = torch.stack((unq_coords // self.scale_xy, # batch_idx
-                                     (unq_coords % self.scale_xy) // self.scale_y, # x
-                                     unq_coords % self.scale_y, # y
+        pillar_coords = torch.stack((unq_coords // self.scale_xy,  # batch_idx
+                                     (unq_coords % self.scale_xy) // self.scale_y,  # x
+                                     unq_coords % self.scale_y,  # y
                                      ), dim=1)
         pillar_coords = pillar_coords[:, [0, 2, 1]]
 
